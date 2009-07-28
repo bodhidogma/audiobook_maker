@@ -1,0 +1,27 @@
+# $Id$
+
+Required tools:
+
+ - ffmpeg + libfaac		: http://ffmpeg.org/
+ - mp3info			: http://www.ibiblio.org/mp3info/		
+ - ChapterTool (mac OSX 10.4)	: /Applications/GarageBand.app/Contents/MacOS
+ - abmaker (perl)
+
+Instructions:
+
+ - Compile MP3 files into a folder, each file being an ipod chapter
+ - run abmaker
+    . MP3 files will be joined into one large file
+    . MP3 files will be converted to a .m4a using the equivalent bit / sample rate
+    . XML bookmark template will be generated with appropriate time positions
+
+ - edit the resulting XML chapter info details
+ - (On a MAC) run the ChapterTool using the resulting m4a / xml files:
+ 	F='em-tsod-p1'; ChapterTool -x $F.xml -a $F.m4a -o $F.m4b -nu -np
+
+Misc:
+ - OSX 'ChapterTool' can now be found as part of GarageBand.  This is the only
+ 	component that requires OSX to run.
+ - Quick bash script to merge multiple CDs / Tapes together:
+ 	for ((CH=1;CH<=9;CH=$CH+1)); do C=`printf "%02d" $CH`; echo "$CH"; cat Tape\ $C?.mp3 > new/Tape-$CH.mp3; done
+

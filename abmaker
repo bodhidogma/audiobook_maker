@@ -1,0 +1,130 @@
+#! /usr/bin/perl
+#
+# $Id$
+#
+# abmaker - Audio book Maker
+#
+use strict;
+
+use constant {
+	JOIN_MP3	=> "ab_join.mp3",
+	CONV_M4A	=> "ab_join.m4a",
+	BOOK_XML	=> "ab_mark.xml",
+};
+
+my ($Join_MP3, $Conv_M4A, $Book_XML) = ( JOIN_MP3, CONV_M4A, BOOK_XML );
+
+# read directory list
+sub get_dirlist() {
+    my ($dir, $pat) = @_;
+    my (@dirlist);
+
+    opendir( DIR, $dir );
+    @dirlist = grep /$pat/i, readdir DIR;
+    closedir( DIR );
+
+    return sort( @dirlist );
+}
+
+# get some info about the MP3
+sub mp3info()
+{
+	my ($file) = @_;
+	my ($ret, @info);
+
+	open MP3, "mp3info -p \"%S %m:%s\" \"$file\"|";
+	$ret = <MP3>;
+	close MP3;
+
+#	print "m: $ret ";
+#	foreach (@info) { print "m: $_"; }
+	return $ret;
+}
+
+# join all MP3 files together (using cat)
+sub join_mp3()
+{
+	my ($outfile, @flist) = @_;
+	my ($cmd, $args);
+
+	foreach (@flist) { $args .= "\"$_\" " }
+	$cmd = "cat $args > $outfile";
+
+	print "Joining: $outfile from ($args)\n";
+	system $cmd;
+}
+
+# convert MP3 to M4A (using ffmpeg/flaac)
+sub convert_mp3()
+{
+	my ($outfile, $infile, $dur) = @_;
+	my ($cmd, $args);
+
+	$cmd = "ffmpeg -i $infile -vn -y -sameq -map_meta_data $outfile:$infile $outfile";
+
+	print "Converting: $outfile from $infile ($dur s)\n\n";
+#	print "cmd: $cmd\n";
+	system $cmd;
+}
+
+# generate XML bookmark file
+sub generate_bkmark()
+{
+	my ($outfile, @bxml) = @_;
+
+	print "Generating Bookmarks: $outfile\n";
+
+	unshift @bxml, "<?xml version=\"1.0\" encoding=\"utf-8\"?><chapters version=\"1\">\n";
+	push @bxml, "</chapters>\n";
+
+	open XML, ">$outfile";
+	print XML @bxml;
+	close XML;
+}
+
+# main entry point
+sub main()
+{
+	my (@args) = @_;
+	my @files;
+	my ($f, $t, $pat);
+	my ($dfile, $dtot);
+	my @finfo;
+	my @flist;
+	my @fxml;
+
+	$pat = $args[0];
+	if ($pat eq ""){ $pat = qw/\.mp3/; }
+
+	print "Selecting files: '$pat'\n";
+
+	# get list of files in directory
+	@files = &get_dirlist( ".", $pat);
+
+	# figure out file duration / bookmark position
+	$dtot = 0;
+	foreach (@files) {
+		$f = $t = $_;
+		$t =~ s/\.mp3//i;
+
+#		push @finfo, join("~",$t,$dtot);
+		push @flist, $f;
+		push @fxml, sprintf
+			"<chapter starttime=\"%d:%02d\">\n\t<title>%s</title></chapter>\n",
+			$dtot/60, $dtot%60, $t;
+
+		$dfile = &mp3info( $f );
+		$dtot += $dfile;
+#		printf "f: (%d:%02d) $t\n", $dtot/60, $dtot%60;
+	}
+
+	# if some files were found, process them
+	if ( scalar(@flist)) {
+		&join_mp3( $Join_MP3, @flist );
+		&convert_mp3( $Conv_M4A, $Join_MP3, $dtot );
+		&generate_bkmark($Book_XML, @fxml);
+	}
+}
+
+&main( @ARGV );
+
