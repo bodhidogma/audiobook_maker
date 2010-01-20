@@ -4,15 +4,48 @@
 #
 # abmaker - Audio book Maker
 #
+# Required tools:
+# - sox (V 14.2.0 ?) (wav / flac processing)
+# - ffmpeg (V 0.5 ?) (input conversion to wav for faac)
+# - faac (V 1.28 ?)  (transcoding to m4a/m4b)
+# - mp4chaps (V1.9.1)(adding QT chapter data to file) (src = mp4v2-1.9.1.tar.bz2)
+#
+# Steps:
+# 1. rip cd tracks into wav/flac files
+# 2. determine which tracks are combined into chapter groups (1a, 1b, 2a, 2b, 2c...etc.)
+# 3. use sox to join the tracks into chapter file(s) (sox <infiles> -c1 -r22050 <outfile>)
+# 4. rename chapter files according to name in bookmark table (01-Chapter 1.flac, 02-Chapter 2.flac)
+#    -prefix each chapter with 2 digit sequence number to ensure correct order
+# 5. organize chapter(s) into part folder(s). ie: part1 = 6h, part2 = 5.6h
+# 6. create <outfile>.meta.txt metadata file as needed for each part
+# 7. run script:
+#    > cd part1; abmaker2 -p '0.*\.flac' '../harry_potter-p1'; cd ..
+#
+# 8. rename the resulting m4a file to <file>.m4b so itunes recognizes the audiobook category
+# 9. import into iTunes / copy to iPod / enjoy!
+#
+# Questions / concerns / email Paul McAvoy <paulmcav@queda.net>
+
+# Metadata supported tags:
+# ARTIST  = Sara Gruen
+# TITLE   = Water for Elephants, Part 1
+# GENRE   = Audiobook
+# ALBUM   = Water for Elephants
+# TRACK   = 1/2
+# YEAR    = 2006
+# COVER   = ../water.jpg
+
 use strict;
 
 use constant {
-	JOIN_MP3	=> "ab_join.mp3",
-	CONV_M4A	=> "ab_join.m4a",
-	BOOK_XML	=> "ab_mark.xml",
+	JOIN_FILE   => "ab_join",
+	JOIN_EXT	=> ".flac",
+	JOIN_CNV	=> ".m4a",
+	JOIN_CHP	=> ".chapters.txt",
+	JOIN_MET	=> ".meta.txt",
 };
 
-my ($Join_MP3, $Conv_M4A, $Book_XML) = ( JOIN_MP3, CONV_M4A, BOOK_XML );
+my ($Join_Media, $Conv_M4A, $Chap_Marks, $Conv_Meta );
 
 # read directory list
 sub get_dirlist() {
@@ -23,63 +56,136 @@ sub get_dirlist() {
     @dirlist = grep /$pat/i, readdir DIR;
     closedir( DIR );
 
+#	print "dir($pat): @dirlist\n";
     return sort( @dirlist );
 }
 
-# get some info about the MP3
-sub mp3info()
+# get some info about the media
+sub media_info()
 {
-	my ($file) = @_;
-	my ($ret, @info);
+	my ($mod, $file, $ext, $start) = @_;
+	my (@buff, @info);
 
-	open MP3, "mp3info -p \"%S %m:%s\" \"$file\"|";
-	$ret = <MP3>;
-	close MP3;
+	# output of soxi duration is H:M:S
+	open MEDIA, "soxi \"$file\"|";
+	@buff = <MEDIA>;
+	close MEDIA;
 
-#	print "m: $ret ";
-#	foreach (@info) { print "m: $_"; }
-	return $ret;
+#	print "b: @buff";
+	foreach (@buff) {
+		chomp $_;
+		my $l = $_;
+
+		# determine track / chapter duration
+		if ($l =~ qr/Dur.+: (\d+):(\d+):([\d.]+) =/) {
+			$info[0] = ($1*3600)+($2*60)+$3;
+			$info[1] = "$1:$2:$3";
+		}
+	}
+
+	# clean up chapter name (from file)
+	$file =~ qr/.+-(.+)\..+$/;
+	$info[2] = $1;
+
+	# calc start position of this 'chapter' in H:M:S
+	my ($h,$m,$s);
+	$h = int($start/3600);
+	$m = int($start%3600/60);
+	$s = $start-($h*3600)-($m*60);
+	$info[3] = sprintf( "%02d:%02d:%05.2f", $h, $m, $s);
+
+	if ($mod eq "-n" ){ print "m: @info\n"; }
+
+	return @info;
 }
 
-# join all MP3 files together (using cat)
-sub join_mp3()
+sub get_metadata( )
 {
-	my ($outfile, @flist) = @_;
+	my ($mod, $file) = @_;
+	my (@buff, @info);
+
+	# output of soxi duration is H:M:S
+	open MEDIA, "<$file";
+	@buff = <MEDIA>;
+	close MEDIA;
+
+#	print "b: @buff";
+	foreach (@buff) {
+		chomp $_;
+		my $l = $_;
+
+		# determine track / chapter duration
+		if ($l =~ qr/ARTIST.*= (.*)/i) { $info[0] = $1; }
+		if ($l =~ qr/TITLE.*= (.*)/i) { $info[1] = $1; }
+		if ($l =~ qr/GENRE.*= (.*)/i) { $info[2] = $1; }
+		if ($l =~ qr/ALBUM.*= (.*)/i) { $info[3] = $1; }
+		if ($l =~ qr/TRACK.*= (.*)/i) { $info[4] = $1; }
+		if ($l =~ qr/DISK.*= (.*)/i) { $info[5] = $1; }
+		if ($l =~ qr/YEAR.*= (.*)/i) { $info[6] = $1; }
+		if ($l =~ qr/COVER.*= (.*)/i) { $info[7] = $1; }
+		if ($l =~ qr/COMMENT.*= (.*)/i) { $info[8] = $1; }
+	}
+
+	if ($mod eq "-n" ){ print "m: @info\n"; }
+
+	return @info;
+}
+
+# join all media files together (using cat)
+sub join_media()
+{
+	my ($mod, $outfile, @flist) = @_;
 	my ($cmd, $args);
 
 	foreach (@flist) { $args .= "\"$_\" " }
-	$cmd = "cat $args > $outfile";
+	$cmd = "sox -S $args $outfile";
 
-	print "Joining: $outfile from ($args)\n";
-	system $cmd;
+#	print "Joining: $outfile from ($args)\n";
+	print "Joining: $cmd \n";
+	if ($mod eq "-j" || $mod eq "-p") {	system $cmd; }
 }
 
-# convert MP3 to M4A (using ffmpeg/flaac)
-sub convert_mp3()
+# convert media to M4A (using ffmpeg/flaac)
+sub convert_media()
 {
-	my ($outfile, $infile, $dur) = @_;
+	my ($mod, $outfile, $infile, $dur, @meta) = @_;
 	my ($cmd, $args);
 
-	$cmd = "ffmpeg -i $infile -vn -y -sameq -map_meta_data $outfile:$infile $outfile";
+#	$cmd = "ffmpeg -i $infile -vn -y -sameq -ab  -map_meta_data $outfile:$infile $outfile";
+#	$cmd = "ffmpeg -y -vn -i $infile -f wav - 2>/dev/null|faac -o $outfile -";
+	if ($meta[0] ne "") { $args .= "--artist \"$meta[0]\" "; }
+	if ($meta[1] ne "") { $args .= "--title \"$meta[1]\" "; }
+	if ($meta[2] ne "") { $args .= "--genre \"$meta[2]\" "; }
+	if ($meta[3] ne "") { $args .= "--album \"$meta[3]\" "; }
+	if ($meta[4] ne "") { $args .= "--track \"$meta[4]\" "; }
+	if ($meta[5] ne "") { $args .= "--disk \"$meta[5]\" "; }
+	if ($meta[6] ne "") { $args .= "--year \"$meta[6]\" "; }
+	if ($meta[7] ne "") { $args .= "--cover-art \"$meta[7]\" "; }
+	if ($meta[8] ne "") { $args .= "--comment \"$meta[8]\" "; }
 
-	print "Converting: $outfile from $infile ($dur s)\n\n";
+	$cmd = "ffmpeg -y -vn -i $infile -f wav - 2>/dev/null|faac -wo $outfile $args -";
+
+	print "Converting: $infile -> $outfile ($dur s)\n\t$cmd\n";
 #	print "cmd: $cmd\n";
-	system $cmd;
+	if ($mod eq "-c" || $mod eq "-p") {	system $cmd; }
 }
 
-# generate XML bookmark file
+# generate bookmark file
 sub generate_bkmark()
 {
-	my ($outfile, @bxml) = @_;
+	my ($mod, $bookfile, $m4afile, @bmarks) = @_;
+	my ($cmd);
 
-	print "Generating Bookmarks: $outfile\n";
+	print "Bookmark data: $bookfile\n";
 
-	unshift @bxml, "<?xml version=\"1.0\" encoding=\"utf-8\"?><chapters version=\"1\">\n";
-	push @bxml, "</chapters>\n";
-
-	open XML, ">$outfile";
-	print XML @bxml;
+	open XML, ">$bookfile";
+	print XML @bmarks;
 	close XML;
+
+	$cmd = "mp4chaps -i $m4afile";
+	print "Chapterizing: $cmd\n";
+
+	if ($mod eq "-b" || $mod eq "-p") {	system $cmd; }
 }
 
 # main entry point
@@ -87,42 +193,68 @@ sub main()
 {
 	my (@args) = @_;
 	my @files;
-	my ($f, $t, $pat);
-	my ($dfile, $dtot);
-	my @finfo;
+	my ($f, $t, $pat, $dest);
+	my (@finfo, $dur_tot_s);
+	my @fmeta;
 	my @flist;
-	my @fxml;
+	my ($mod, @fchap, $chap_cnt);
 
-	$pat = $args[0];
-	if ($pat eq ""){ $pat = qw/\.mp3/; }
+	$mod = $args[0];
+	if ($mod eq "") {
+		print "usage: $0 (-n|-j|-c|-b|-p) (regex pat) (outfile)\n";
+		print " -n = simualte ops\n";
+		print " -j = join media files\n";
+		print " -c = convert files\n";
+		print " -b = bookmark file\n";
+		print " -p = join & convert\n";
+		print " Regex def = '\\.flac'\n";
+		print " Outfile   = '". JOIN_FILE ."'\n";
+		print "\n";
+		return;
+	}
+	$pat  = $args[1];
+	$dest = $args[2];
 
-	print "Selecting files: '$pat'\n";
+	if ($pat eq ""){ $pat = qw/\.flac/; }
+	if ($dest eq ""){ $dest = JOIN_FILE; }
+
+	$Join_Media = $dest.JOIN_EXT;
+	$Conv_M4A = $dest.JOIN_CNV;
+	$Chap_Marks = $dest.JOIN_CHP;
+	$Conv_Meta = $dest.JOIN_MET;
+
+	print "Audiobooking from file(s): '$pat' -> '$dest'".JOIN_CNV."\n";
 
 	# get list of files in directory
 	@files = &get_dirlist( ".", $pat);
 
 	# figure out file duration / bookmark position
-	$dtot = 0;
+	$dur_tot_s = 0;
+	$chap_cnt = 0;
 	foreach (@files) {
-		$f = $t = $_;
-		$t =~ s/\.mp3//i;
+		$f = $_;
 
-#		push @finfo, join("~",$t,$dtot);
+		# get file metadata, duration and more
+		@finfo = &media_info( $mod, $f, $pat, $dur_tot_s );
+
+		# append files / chapter info to list(s)
 		push @flist, $f;
-		push @fxml, sprintf
-			"<chapter starttime=\"%d:%02d\">\n\t<title>%s</title></chapter>\n",
-			$dtot/60, $dtot%60, $t;
+#		push @fchap, sprintf ( "CHAPTER%d=%s\n"."CHAPTER%dNAME=%s\n",
+#			++$chap_cnt, $fmeta[3], $chap_cnt, $fmeta[2] ); 
+		push @fchap, sprintf ( "%s %s\n", $finfo[3], $finfo[2] ); 
 
-		$dfile = &mp3info( $f );
-		$dtot += $dfile;
-#		printf "f: (%d:%02d) $t\n", $dtot/60, $dtot%60;
+		# append track time to total duration
+		$dur_tot_s += $finfo[0];
+#		printf "f: $f = $finfo[0]\n";
 	}
+
+	@fmeta = &get_metadata( $mod, $Conv_Meta );
 
 	# if some files were found, process them
 	if ( scalar(@flist)) {
-		&join_mp3( $Join_MP3, @flist );
-		&convert_mp3( $Conv_M4A, $Join_MP3, $dtot );
-		&generate_bkmark($Book_XML, @fxml);
+		&join_media( $mod, $Join_Media, @flist );
+		&convert_media( $mod, $Conv_M4A, $Join_Media, $dur_tot_s, @fmeta );
+		&generate_bkmark( $mod, $Chap_Marks, $Conv_M4A, @fchap);
 	}
 }
 
