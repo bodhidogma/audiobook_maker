@@ -1,5 +1,9 @@
 # $Id$
 
+NOTE:
+ - OSX users, I strongly suggest looking into https://github.com/gonzoua/AudioBookBinder.  Combine with a shell script
+   and iTunes to make quick work of creating audio books.
+   
 Required tools:
 
  - ffmpeg + libfaac		: http://ffmpeg.org/
